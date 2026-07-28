@@ -1,0 +1,10 @@
+$startup = [Environment]::GetFolderPath("Startup")
+
+$shortcutPath = Join-Path $startup "ps-list.lnk"
+
+$wshell = New-Object -ComObject WScript.Shell
+$shortcut = $wshell.CreateShortcut($shortcutPath)
+
+$shortcut.TargetPath = "powershell.exe"
+$shortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\tempdir\ps-list.ps1"'
+$shortcut.Save()
